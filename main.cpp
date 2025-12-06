@@ -1,264 +1,143 @@
-#include <igl/opengl/glfw/Viewer.h>
-#include <igl/project.h>
+#include <igl/readOFF.h>
 #include <igl/adjacency_list.h>
+#include <igl/opengl/glfw/Viewer.h>
+#include <igl/unproject_onto_mesh.h>
 #include <igl/cotmatrix.h>
 #include <igl/massmatrix.h>
 #include <igl/invert_diag.h>
-#include <igl/jet.h>
-#include <igl/read_triangle_mesh.h>
-#include <unordered_map>
-#include <vector>
-#include <utility>
-#include <algorithm>
-#include <iostream>
+
+#include <Eigen/Core>
+#include <Eigen/Sparse>
+#include <queue>
 #include <set>
 
-// Global variables for mesh and processing
-Eigen::MatrixXd V, V_original;
-Eigen::MatrixXi F;
-Eigen::SparseMatrix<double> L, M;
-std::vector<std::vector<int>> adj;
-int selected_vertex = -1;
-int k_ring_size = 1;
-bool show_laplacian_color = false;
-
-// Helper to get K-Ring neighbors
-std::vector<int> get_k_ring(int start_vertex, int k, const std::vector<std::vector<int>>& adjacency) {
+const unsigned int KEY__PLUS = 334; //touche + pour k+1anneaux
+const unsigned int KEY__MOINS = 333; //touche - pour k-1 anneaux
+const unsigned int KEY__INTERROGATION = 77; //touche , ou ? pour laplacien 
+const unsigned int KEY__N = 78;
+struct MeshApp {
+    Eigen::MatrixXd V, C;
+    Eigen::MatrixXi F;
+    std::vector<std::vector<int>> A; //A[i] est la liste des indices des sommets adjacents au sommet i.
     std::set<int> visited;
-    std::set<int> current_ring;
-    std::set<int> next_ring;
-    
-    current_ring.insert(start_vertex);
-    visited.insert(start_vertex);
-    
-    for(int i = 0; i < k; ++i) {
-        next_ring.clear();
-        for(int v : current_ring) {
-            for(int neighbor : adjacency[v]) {
-                if(visited.find(neighbor) == visited.end()) {
-                    visited.insert(neighbor);
-                    next_ring.insert(neighbor);
-                }
+    int sommet = 0;
+    int k = 0;
+};
+//-------------------------------------------------
+
+std::set<int> k_anneaux(const std::vector<std::vector<int>>& A, int v0, int k) {
+    std::set<int> visited;
+    std::queue<std::pair<int, int>> q;
+    q.push({v0, 0});
+    visited.insert(v0);
+
+    while(!q.empty()) {
+        auto [v, depth] = q.front(); q.pop();
+        if (depth >= k) continue;
+        for (int n : A[v]) {
+            if (!visited.count(n)) {
+                visited.insert(n);
+                q.push({n, depth + 1});
             }
         }
-        if(next_ring.empty()) break;
-        current_ring = next_ring;
     }
-    
-    return std::vector<int>(visited.begin(), visited.end());
+    return visited;
+}
+//fonction update couleur des k-anneaux
+void update_colors(MeshApp& app, igl::opengl::glfw::Viewer& viewer) {
+    app.visited = k_anneaux(app.A, app.sommet, app.k);
+    app.C = Eigen::MatrixXd::Constant(app.V.rows(), 3, 0.8); // gris clair
+    for (int i : app.visited)
+        app.C.row(i) << 1, 0, 0;
+    viewer.data().set_colors(app.C); //colore le maillage
+
+    //viewer.data().clear_points(); //supprime anciens points
+    //viewer.data().add_points(app.V, app.C); //re-affiche les points avec nouvelles couleurs
+    //std::cout << "Sommet sélectionné : " << sommet << " | k = " << k << " | " << visited.size() << " voisins" << std::endl;
 }
 
-// Compute Laplacian Magnitude for coloring
-void update_laplacian_color(igl::opengl::glfw::Viewer& viewer) {
-    if (L.rows() == 0 || M.rows() == 0) return;
+//-------------------------------------------------
 
-    // L * V gives the Laplacian vectors (approx mean curvature normals)
-    // We want the magnitude of M^-1 * L * V for the scalar value
-    Eigen::SparseMatrix<double> Minv;
-    igl::invert_diag(M, Minv);
-    Eigen::MatrixXd LV = Minv * (L * V);
-    Eigen::VectorXd H = LV.rowwise().norm(); // Magnitude
+void LaplacienStepDiff(const Eigen::MatrixXd &V, const Eigen::MatrixXi &F, Eigen::MatrixXd &nouveauV, double lambda = 0.00001) {
+  Eigen::SparseMatrix<double> C;
+  igl::cotmatrix(V, F, C);
+  Eigen::SparseMatrix<double> M;
+  igl::massmatrix(V, F, igl::MASSMATRIX_TYPE_BARYCENTRIC, M);
 
-    Eigen::MatrixXd C;
-    igl::jet(H, true, C);
-    viewer.data().set_colors(C);
+  Eigen::SparseMatrix<double> Minv;
+  igl::invert_diag(M, Minv);
+  Eigen::SparseMatrix<double> Lnorm = Minv * C;
+
+  // Maj
+  nouveauV = V + lambda * (Lnorm*V);
 }
 
-// Explicit Smoothing (Diffusion)
-void smooth_explicit(double dt = 0.01) {
-    if (L.rows() == 0) return;
-    // V_new = V + dt * M^-1 * L * V
-    // Note: L in libigl is usually negative semi-definite (cotan), so diffusion is + L
-    // But check sign: Energy E = 0.5 V^T L V. Gradient is L V. Flow is -Gradient.
-    // So dV/dt = - (M^-1 * L * V). 
-    // Let's try positive first, if it explodes or sharpens, we flip.
-    // Standard cotmatrix is negative semi-definite. So L*V points "inwards" (curvature).
-    // To smooth, we want to move in direction of curvature? No, mean curvature flow moves in direction of mean curvature vector.
-    // Mean curvature vector H = -Laplace(V). 
-    // So dV/dt = H = -Laplace(V).
-    // If L is negative semi-definite, then -L is positive semi-definite.
-    // Actually, let's just use the standard flow: V = V + dt * (M^-1 * L * V)
-    
-    Eigen::SparseMatrix<double> Minv;
-    igl::invert_diag(M, Minv);
-    V = V + dt * (Minv * (L * V));
+void LaplacienStepSL(const Eigen::MatrixXd &V, const Eigen::MatrixXi &F, Eigen::MatrixXd &nouveauV, double lambda = 0.0001) {
+  Eigen::SparseMatrix<double> C;
+  igl::cotmatrix(V, F, C);
+  Eigen::SparseMatrix<double> M;
+  igl::massmatrix(V, F, igl::MASSMATRIX_TYPE_BARYCENTRIC, M);
+
+  Eigen::SparseMatrix<double> Q=M - lambda *C;
+  Eigen::SimplicialLLT<Eigen::SparseMatrix<double>> solver;
+  solver.compute(Q);
+  Eigen::MatrixXd RHS=M*V;
+  nouveauV=solver.solve(RHS);
 }
 
-// Implicit Smoothing (Linear System)
-void smooth_implicit(double dt = 0.01) {
-    if (L.rows() == 0) return;
-    // (M - dt * L) * V_new = M * V
-    // Again, check sign. If Explicit is V + dt*Minv*L*V, then Implicit is (I - dt*Minv*L)V_new = V
-    // => (M - dt*L) V_new = M V
-    
-    Eigen::SimplicialLLT<Eigen::SparseMatrix<double>> solver;
-    Eigen::SparseMatrix<double> A = M - dt * L;
-    solver.compute(A);
-    if(solver.info() != Eigen::Success) {
-        std::cout << "Decomposition failed!" << std::endl;
-        return;
+int main(int argc, char *argv[]){
+  MeshApp app;
+  igl::readOFF("../meshes/bunny.off", app.V, app.F); // chargement mesh format off
+  igl::adjacency_list(app.F, app.A);
+  igl::opengl::glfw::Viewer viewer;
+  viewer.data().set_mesh(app.V, app.F);
+  viewer.data().point_size = 5;
+
+  // callback clavier
+  viewer.callback_key_down = [&](igl::opengl::glfw::Viewer&, unsigned int key, int) {
+    std::cout << "Key pressed: " << key << std::endl;
+    if (key == KEY__PLUS) { 
+      app.k++; 
+      update_colors(app, viewer); 
     }
-    V = solver.solve(M * V);
-}
-
-int main(int argc, char *argv[])
-{
-    // Load mesh if provided, otherwise use cube
-    if (argc > 1) {
-        igl::read_triangle_mesh(argv[1], V, F);
-    } else {
-        // Inline mesh of a cube
-        V = (Eigen::MatrixXd(8,3)<<
-        0.0,0.0,0.0,
-        0.0,0.0,1.0,
-        0.0,1.0,0.0,
-        0.0,1.0,1.0,
-        1.0,0.0,0.0,
-        1.0,0.0,1.0,
-        1.0,1.0,0.0,
-        1.0,1.0,1.0).finished();
-        F = (Eigen::MatrixXi(12,3)<<
-        0,6,4,
-        0,2,6,
-        0,3,2,
-        0,1,3,
-        2,7,6,
-        2,3,7,
-        4,6,7,
-        4,7,5,
-        0,4,5,
-        0,5,1,
-        1,5,7,
-        1,7,3).finished();
+    else if (key == KEY__MOINS && app.k >= 1) { 
+      app.k--; 
+      update_colors(app, viewer); 
     }
-    
-    V_original = V;
+    else if (key == KEY__INTERROGATION) {
+      Eigen::MatrixXd nouveauV;
+      LaplacienStepDiff(app.V, app.F, nouveauV);
+      app.V=nouveauV;
+      viewer.data().set_vertices(app.V);
+      viewer.data().compute_normals();
+    }
+    else if (key == KEY__N) {
+      Eigen::MatrixXd nouveauV;
+      LaplacienStepSL(app.V, app.F, nouveauV);
+      app.V=nouveauV;
+      viewer.data().set_vertices(app.V);
+      viewer.data().compute_normals();
+    }
+    return false;
+  };
+  // callback souris
+  viewer.callback_mouse_down = [&](igl::opengl::glfw::Viewer& v, int boutton, int modifier) {
+    if (boutton == GLFW_MOUSE_BUTTON_LEFT) {
+      int fid;            // index 
+      Eigen::Vector3f bc; // coordonnées barycentriques
+      double x = v.current_mouse_x;
+      double y = v.core().viewport(3) - v.current_mouse_y; // conversion coords écran
+      if (igl::unproject_onto_mesh( Eigen::Vector2f(x, y), v.core().view, v.core().proj, v.core().viewport, app.V, app.F, fid, bc)){
+        // Trouver le sommet le plus proche dans la face cliquée
+        int vi;
+        bc.maxCoeff(&vi);
+        app.sommet = app.F(fid, vi);
+        update_colors(app, viewer);
+      }
+    }
+    return false;
+  };
 
-    // Compute Adjacency
-    igl::adjacency_list(F, adj);
-
-    // Compute Laplacian and Mass matrix
-    igl::cotmatrix(V, F, L);
-    igl::massmatrix(V, F, igl::MASSMATRIX_TYPE_VORONOI, M);
-
-    // Plot the mesh
-    igl::opengl::glfw::Viewer viewer;
-    viewer.data().set_mesh(V, F);
-    viewer.data().set_face_based(false); // Changed to false to see smooth shading if needed
-    viewer.data().point_size = 8.0f;
-    viewer.data().show_overlay = true;
-
-    // Helper to update visualization of selection
-    auto update_selection_viz = [&](igl::opengl::glfw::Viewer& v) {
-        if (selected_vertex == -1) return;
-        
-        std::cout << "Updating selection for Vertex: " << selected_vertex << " (K=" << k_ring_size << ")" << std::endl;
-        
-        // Compute K-Ring
-        std::vector<int> neighbors = get_k_ring(selected_vertex, k_ring_size, adj);
-        
-        // Visualize Selection
-        v.data().clear_points();
-        // Center point red
-        v.data().add_points(V.row(selected_vertex), Eigen::RowVector3d(1,0,0));
-        // Neighbors green
-        for(int n : neighbors) {
-            if(n != selected_vertex)
-                v.data().add_points(V.row(n), Eigen::RowVector3d(0,1,0));
-        }
-    };
-
-    // Mouse callback for selection
-    viewer.callback_mouse_down = [&](igl::opengl::glfw::Viewer& v, int b, int)->bool{
-        if (b != GLFW_MOUSE_BUTTON_MIDDLE)
-            return false;
-
-        const auto& c = v.core();
-        Eigen::Vector2f m(v.current_mouse_x, c.viewport(3) - v.current_mouse_y);
-
-        float best = std::numeric_limits<float>::infinity();
-        Eigen::Vector3f w;
-        int closest_v = -1;
-        
-        for (int i = 0; i < V.rows(); ++i) {
-            igl::project(V.row(i).cast<float>(), c.view, c.proj, c.viewport, w);
-            float d2 = (w.head<2>() - m).squaredNorm();
-            if (d2 < best) {
-                best = d2;
-                closest_v = i;
-            }
-        }
-
-        if (closest_v >= 0) {
-            selected_vertex = closest_v;
-            update_selection_viz(v);
-            return true;
-        }
-        return false;
-    };
-
-    // Keyboard callback
-    viewer.callback_key_down = [&](igl::opengl::glfw::Viewer& v, unsigned int key, int modifiers)->bool {
-        // std::cout << "Key pressed: " << key << std::endl; // Debug
-        switch(key) {
-            case '+':
-            case '=':
-            case 266: // GLFW_KEY_KP_ADD
-                k_ring_size++;
-                std::cout << "K-Ring Size: " << k_ring_size << std::endl;
-                update_selection_viz(v);
-                return true;
-            case '-':
-            case '_':
-            case 265: // GLFW_KEY_KP_SUBTRACT
-                if(k_ring_size > 0) k_ring_size--;
-                std::cout << "K-Ring Size: " << k_ring_size << std::endl;
-                update_selection_viz(v);
-                return true;
-            case 'D':
-            case 'd':
-                std::cout << "Explicit Smoothing (Diffusion)..." << std::endl;
-                smooth_explicit(0.1); // Small step for explicit
-                v.data().set_mesh(V, F);
-                v.data().compute_normals();
-                if(selected_vertex != -1) update_selection_viz(v); // Keep selection visible
-                return true;
-            case 'S':
-            case 's':
-                std::cout << "Implicit Smoothing (Linear System)..." << std::endl;
-                smooth_implicit(1.0); // Larger step allowed for implicit
-                v.data().set_mesh(V, F);
-                v.data().compute_normals();
-                if(selected_vertex != -1) update_selection_viz(v); // Keep selection visible
-                return true;
-            case 'R':
-            case 'r':
-                std::cout << "Resetting mesh..." << std::endl;
-                V = V_original;
-                v.data().set_mesh(V, F);
-                v.data().compute_normals();
-                if(selected_vertex != -1) update_selection_viz(v);
-                return true;
-            case 'L':
-            case 'l':
-                show_laplacian_color = !show_laplacian_color;
-                if(show_laplacian_color) {
-                    update_laplacian_color(v);
-                } else {
-                    v.data().set_colors(Eigen::RowVector3d(1,1,1)); // White
-                }
-                return true;
-        }
-        return false;
-    };
-
-    std::cout << "Usage:\n";
-    std::cout << "  Middle Click: Select vertex and show K-Ring\n";
-    std::cout << "  +/-: Increase/Decrease K-Ring size\n";
-    std::cout << "  D: Explicit Smoothing (Diffusion)\n";
-    std::cout << "  S: Implicit Smoothing (Linear System)\n";
-    std::cout << "  L: Toggle Laplacian Magnitude Coloring\n";
-    std::cout << "  R: Reset Mesh\n";
-
-    viewer.launch();
+  update_colors(app, viewer);
+  viewer.launch();
 }
