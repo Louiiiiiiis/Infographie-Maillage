@@ -148,6 +148,26 @@ int main(int argc, char *argv[])
     viewer.data().point_size = 8.0f;
     viewer.data().show_overlay = true;
 
+    // Helper to update visualization of selection
+    auto update_selection_viz = [&](igl::opengl::glfw::Viewer& v) {
+        if (selected_vertex == -1) return;
+        
+        std::cout << "Updating selection for Vertex: " << selected_vertex << " (K=" << k_ring_size << ")" << std::endl;
+        
+        // Compute K-Ring
+        std::vector<int> neighbors = get_k_ring(selected_vertex, k_ring_size, adj);
+        
+        // Visualize Selection
+        v.data().clear_points();
+        // Center point red
+        v.data().add_points(V.row(selected_vertex), Eigen::RowVector3d(1,0,0));
+        // Neighbors green
+        for(int n : neighbors) {
+            if(n != selected_vertex)
+                v.data().add_points(V.row(n), Eigen::RowVector3d(0,1,0));
+        }
+    };
+
     // Mouse callback for selection
     viewer.callback_mouse_down = [&](igl::opengl::glfw::Viewer& v, int b, int)->bool{
         if (b != GLFW_MOUSE_BUTTON_MIDDLE)
@@ -171,45 +191,29 @@ int main(int argc, char *argv[])
 
         if (closest_v >= 0) {
             selected_vertex = closest_v;
-            std::cout << "Selected Vertex: " << selected_vertex << " (K=" << k_ring_size << ")" << std::endl;
-            
-            // Compute K-Ring
-            std::vector<int> neighbors = get_k_ring(selected_vertex, k_ring_size, adj);
-            
-            // Visualize Selection
-            v.data().clear_points();
-            // Center point red
-            v.data().add_points(V.row(selected_vertex), Eigen::RowVector3d(1,0,0));
-            // Neighbors green
-            for(int n : neighbors) {
-                if(n != selected_vertex)
-                    v.data().add_points(V.row(n), Eigen::RowVector3d(0,1,0));
-            }
-            
-            std::cout << "Neighbors found: " << neighbors.size() << std::endl;
+            update_selection_viz(v);
             return true;
         }
         return false;
     };
 
     // Keyboard callback
-    viewer.callback_key_down = [&](igl::opengl::glfw::Viewer& v, unsigned char key, int modifiers)->bool {
+    viewer.callback_key_down = [&](igl::opengl::glfw::Viewer& v, unsigned int key, int modifiers)->bool {
+        // std::cout << "Key pressed: " << key << std::endl; // Debug
         switch(key) {
             case '+':
             case '=':
+            case 266: // GLFW_KEY_KP_ADD
                 k_ring_size++;
                 std::cout << "K-Ring Size: " << k_ring_size << std::endl;
-                // Re-trigger selection viz if a vertex is selected
-                if(selected_vertex != -1) {
-                     // Simulate click logic or just call the function? 
-                     // Easier to just let user click again or copy logic. 
-                     // Let's just print for now.
-                }
+                update_selection_viz(v);
                 return true;
             case '-':
             case '_':
+            case 265: // GLFW_KEY_KP_SUBTRACT
                 if(k_ring_size > 0) k_ring_size--;
                 std::cout << "K-Ring Size: " << k_ring_size << std::endl;
+                update_selection_viz(v);
                 return true;
             case 'D':
             case 'd':
@@ -217,6 +221,7 @@ int main(int argc, char *argv[])
                 smooth_explicit(0.1); // Small step for explicit
                 v.data().set_mesh(V, F);
                 v.data().compute_normals();
+                if(selected_vertex != -1) update_selection_viz(v); // Keep selection visible
                 return true;
             case 'S':
             case 's':
@@ -224,6 +229,7 @@ int main(int argc, char *argv[])
                 smooth_implicit(1.0); // Larger step allowed for implicit
                 v.data().set_mesh(V, F);
                 v.data().compute_normals();
+                if(selected_vertex != -1) update_selection_viz(v); // Keep selection visible
                 return true;
             case 'R':
             case 'r':
@@ -231,6 +237,7 @@ int main(int argc, char *argv[])
                 V = V_original;
                 v.data().set_mesh(V, F);
                 v.data().compute_normals();
+                if(selected_vertex != -1) update_selection_viz(v);
                 return true;
             case 'L':
             case 'l':
