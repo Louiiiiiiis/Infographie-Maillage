@@ -5,6 +5,7 @@
 #include <igl/cotmatrix.h>
 #include <igl/massmatrix.h>
 #include <igl/invert_diag.h>
+#include <igl/jet.h>
 
 #include <Eigen/Core>
 #include <Eigen/Sparse>
@@ -13,10 +14,13 @@
 
 const unsigned int KEY__PLUS = 334; //touche + pour k+1anneaux
 const unsigned int KEY__MOINS = 333; //touche - pour k-1 anneaux
-const unsigned int KEY__INTERROGATION = 77; //touche , ou ? pour laplacien 
-const unsigned int KEY__N = 78;
+const unsigned int KEY_L = 76; // L pour Laplacien Explicit
+const unsigned int KEY_M = 77; // M pour Laplacien Implicit
+const unsigned int KEY_R = 82; // R pour Reset
+const unsigned int KEY_C = 67; // C pour Couleur Laplacien
+
 struct MeshApp {
-    Eigen::MatrixXd V, C;
+    Eigen::MatrixXd V, V_original, C;
     Eigen::MatrixXi F;
     std::vector<std::vector<int>> A; //A[i] est la liste des indices des sommets adjacents au sommet i.
     std::set<int> visited;
@@ -50,10 +54,19 @@ void update_colors(MeshApp& app, igl::opengl::glfw::Viewer& viewer) {
     for (int i : app.visited)
         app.C.row(i) << 1, 0, 0;
     viewer.data().set_colors(app.C); //colore le maillage
+}
 
-    //viewer.data().clear_points(); //supprime anciens points
-    //viewer.data().add_points(app.V, app.C); //re-affiche les points avec nouvelles couleurs
-    //std::cout << "Sommet sélectionné : " << sommet << " | k = " << k << " | " << visited.size() << " voisins" << std::endl;
+void update_laplacian_colors(MeshApp& app, igl::opengl::glfw::Viewer& viewer) {
+    Eigen::SparseMatrix<double> L, M, Minv;
+    igl::cotmatrix(app.V, app.F, L);
+    igl::massmatrix(app.V, app.F, igl::MASSMATRIX_TYPE_BARYCENTRIC, M);
+    igl::invert_diag(M, Minv);
+    
+    Eigen::MatrixXd HN = Minv * (L * app.V);
+    Eigen::VectorXd H = HN.rowwise().norm(); // Magnitude of Mean Curvature
+    
+    igl::jet(H, true, app.C);
+    viewer.data().set_colors(app.C);
 }
 
 //-------------------------------------------------
@@ -88,6 +101,7 @@ void LaplacienStepSL(const Eigen::MatrixXd &V, const Eigen::MatrixXi &F, Eigen::
 int main(int argc, char *argv[]){
   MeshApp app;
   igl::readOFF("../meshes/bunny.off", app.V, app.F); // chargement mesh format off
+  app.V_original = app.V; // Sauvegarde pour reset
   igl::adjacency_list(app.F, app.A);
   igl::opengl::glfw::Viewer viewer;
   viewer.data().set_mesh(app.V, app.F);
@@ -104,19 +118,28 @@ int main(int argc, char *argv[]){
       app.k--; 
       update_colors(app, viewer); 
     }
-    else if (key == KEY__INTERROGATION) {
+    else if (key == KEY_L) {
       Eigen::MatrixXd nouveauV;
       LaplacienStepDiff(app.V, app.F, nouveauV);
       app.V=nouveauV;
       viewer.data().set_vertices(app.V);
       viewer.data().compute_normals();
     }
-    else if (key == KEY__N) {
+    else if (key == KEY_M) {
       Eigen::MatrixXd nouveauV;
       LaplacienStepSL(app.V, app.F, nouveauV);
       app.V=nouveauV;
       viewer.data().set_vertices(app.V);
       viewer.data().compute_normals();
+    }
+    else if (key == KEY_R) {
+        app.V = app.V_original;
+        viewer.data().set_vertices(app.V);
+        viewer.data().compute_normals();
+        update_colors(app, viewer); // Reset colors too
+    }
+    else if (key == KEY_C) {
+        update_laplacian_colors(app, viewer);
     }
     return false;
   };
