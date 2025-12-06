@@ -130,11 +130,14 @@ void compute_harmonic_weights(MeshApp& app) {
     
     // Solve min 0.5 w^T L w subject to w(b) = bc
     // This solves Laplace equation with Dirichlet BC
+    // L is negative semi-definite, so we minimize w^T (-L) w
+    Eigen::SparseMatrix<double> Q = -L;
+    
     Eigen::VectorXd B = Eigen::VectorXd::Zero(n);
     Eigen::VectorXd Beq; // Empty linear equality constraints
     igl::min_quad_with_fixed_data<double> mqwf;
     // Linear term is 0
-    if(!igl::min_quad_with_fixed_precompute(L, b, Eigen::SparseMatrix<double>(), true, mqwf)) {
+    if(!igl::min_quad_with_fixed_precompute(Q, b, Eigen::SparseMatrix<double>(), true, mqwf)) {
          std::cout << "Precompute failed" << std::endl;
          return;
     }
