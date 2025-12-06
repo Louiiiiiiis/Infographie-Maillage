@@ -130,12 +130,11 @@ void compute_harmonic_weights(MeshApp& app) {
     
     int n = app.V.rows();
     Eigen::SparseMatrix<double> L;
-    igl::cotmatrix(app.V_original, app.F, L); // Laplacien cotangente
+    igl::cotmatrix(app.V_original, app.F, L);
 
-    // Préparation des conditions aux limites (Dirichlet)
     // On fixe w=0 sur la zone fixe, et w=1 sur la poignée
-    Eigen::VectorXi b(app.fixed_vertices.size() + app.handle_vertices.size()); // Indices contraints
-    Eigen::VectorXd bc(b.size());                                              // Valeurs contraintes
+    Eigen::VectorXi b(app.fixed_vertices.size() + app.handle_vertices.size());
+    Eigen::VectorXd bc(b.size());
     
     int idx = 0;
     for(int v : app.fixed_vertices)  { b(idx) = v; bc(idx) = 0.0; idx++; }
@@ -167,12 +166,12 @@ void apply_deformation(MeshApp& app) {
     if(!app.weights_computed) return;
     
     for(int i=0; i<app.V.rows(); ++i) {
-        double w = app.weights(i); // Poids brut (0..1)
-        double f_w = w;            // Poids transformé
+        double w = app.weights(i);
+        double f_w = w;
         
         // Fonction de transfert
-        if(app.transfer_function == 1)      f_w = w * w * (3 - 2 * w); // Smoothstep
-        else if (app.transfer_function == 2) f_w = w * w;               // Squared
+        if(app.transfer_function == 1)      f_w = w * w * (3 - 2 * w);
+        else if (app.transfer_function == 2) f_w = w * w;
         
         // V_new = V_old + poids * translation
         app.V.row(i) = app.V_original.row(i) + f_w * app.translation.cast<double>().transpose();
@@ -213,12 +212,20 @@ int main(int argc, char *argv[]){
     bool update_view = false;
     
     // Outils de sélection
-    if (key == KEY_PLUS) { app.k++; update_view=true; }
-    else if (key == KEY_MINUS && app.k > 0) { app.k--; update_view=true; }
-    else if (key == KEY_C) { app.handle_vertices.clear(); std::cout << "Selection effacee.\n"; update_view=true; }
+    if (key == KEY_PLUS) { Squared
+        app.k++; update_view=true; 
+    }
+    else if (key == KEY_MINUS && app.k > 0) { 
+        app.k--; update_view=true; 
+    }
+    else if (key == KEY_C) { 
+        app.handle_vertices.clear(); std::cout << "Selection effacee.\n"; update_view=true; 
+    }
     
     // Calcul
-    else if (key == KEY_SPACE) { compute_harmonic_weights(app); update_view=true; }
+    else if (key == KEY_SPACE) { 
+        compute_harmonic_weights(app); update_view=true; 
+    }
     
     // Déformation
     else if (key == KEY_UP || key == KEY_DOWN || key == KEY_LEFT || key == KEY_RIGHT) {
@@ -307,7 +314,7 @@ int main(int argc, char *argv[]){
             if (app.selection_mode == 2) app.handle_vertices.insert(region.begin(), region.end());
         }
         update_visualization(app, v);
-      }
+      }tiend
     }
     return false;
   };
