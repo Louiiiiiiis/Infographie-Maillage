@@ -68,8 +68,8 @@ void update_laplacian_colors(MeshApp& app, igl::opengl::glfw::Viewer& viewer) {
     // Robust scaling: clamp to 5th and 95th percentiles to avoid outliers
     Eigen::VectorXd H_sorted = H;
     std::sort(H_sorted.data(), H_sorted.data() + H_sorted.size());
-    double min_v = H_sorted(H_sorted.size() * 0.05);
-    double max_v = H_sorted(H_sorted.size() * 0.95);
+    double min_v = H_sorted((int)(H_sorted.size() * 0.05));
+    double max_v = H_sorted((int)(H_sorted.size() * 0.95));
     
     // Clamp
     for(int i=0; i<H.size(); ++i) {
