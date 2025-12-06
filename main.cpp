@@ -176,16 +176,29 @@ int main(int argc, char *argv[]){
   app.V_original = app.V;
   igl::adjacency_list(app.F, app.A);
   
+  // Auto-select Fixed vertices (Bottom of the bunny)
+  double min_y = app.V.col(1).minCoeff();
+  double epsilon = 0.02 * (app.V.col(1).maxCoeff() - min_y); // 2% tolerance
+  for(int i=0; i<app.V.rows(); ++i) {
+      if(app.V(i, 1) < min_y + epsilon) {
+          app.fixed_vertices.insert(i);
+      }
+  }
+  std::cout << "Auto-selected " << app.fixed_vertices.size() << " fixed vertices (Bottom).\n";
+  
+  // Default to Handle selection mode
+  app.selection_mode = 2; 
+  app.k = 2; // Default K-ring size slightly larger
+
   igl::opengl::glfw::Viewer viewer;
   viewer.data().set_mesh(app.V, app.F);
   viewer.data().point_size = 8;
 
   std::cout << "COMMANDS:\n";
-  std::cout << "  1: Mode SELECT FIXED (Blue)\n";
-  std::cout << "  2: Mode SELECT HANDLE (Red)\n";
-  std::cout << "  Click: Select vertex/zone\n";
-  std::cout << "  +/-: Adjust zone size\n";
-  std::cout << "  SPACE: Compute Weights (Harmonic)\n";
+  std::cout << "  [AUTO] Bottom is Fixed (Blue)\n";
+  std::cout << "  [DEFAULT] Click to select Handle (Red)\n";
+  std::cout << "  +/-: Adjust brush size\n";
+  std::cout << "  SPACE: Compute Weights (Wait for gradient)\n";
   std::cout << "  ARROWS: Move Handle\n";
   std::cout << "  R: Reset\n";
 
@@ -201,10 +214,11 @@ int main(int argc, char *argv[]){
     else if (key == KEY_R) { 
         app.V = app.V_original; 
         app.translation.setZero(); 
-        app.fixed_vertices.clear(); 
+        // Keep fixed vertices on reset for convenience? Or clear? 
+        // Let's keep them to save time.
         app.handle_vertices.clear(); 
         app.weights_computed = false; 
-        app.selection_mode = 0;
+        app.selection_mode = 2; // Back to handle select
         v.data().set_vertices(app.V); 
         v.data().compute_normals();
         update=true; 
