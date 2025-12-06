@@ -173,7 +173,8 @@ int main(int argc, char *argv[]){
   
   // Auto-select Fixed vertices (Bottom of the bunny)
   double min_y = app.V.col(1).minCoeff();
-  double epsilon = 0.02 * (app.V.col(1).maxCoeff() - min_y); // 2% tolerance
+  double max_y = app.V.col(1).maxCoeff();
+  double epsilon = 0.05 * (max_y - min_y); // Increased to 5% tolerance
   for(int i=0; i<app.V.rows(); ++i) {
       if(app.V(i, 1) < min_y + epsilon) {
           app.fixed_vertices.insert(i);
@@ -195,6 +196,7 @@ int main(int argc, char *argv[]){
   std::cout << "  +/-: Adjust brush size\n";
   std::cout << "  SPACE: Compute Weights (Wait for gradient)\n";
   std::cout << "  ARROWS: Move Handle\n";
+  std::cout << "  C: Clear Handle Selection\n";
   std::cout << "  R: Reset\n";
 
   viewer.callback_key_down = [&](igl::opengl::glfw::Viewer& v, unsigned int key, int) {
@@ -206,14 +208,18 @@ int main(int argc, char *argv[]){
     else if (key == KEY_PLUS) { app.k++; update=true; }
     else if (key == KEY_MINUS && app.k > 0) { app.k--; update=true; }
     else if (key == KEY_SPACE) { compute_harmonic_weights(app); update=true; }
+    else if (key == 67) { // 'C' to clear handle
+        app.handle_vertices.clear(); 
+        std::cout << "Handle cleared.\n"; 
+        update=true; 
+    }
     else if (key == KEY_R) { 
         app.V = app.V_original; 
         app.translation.setZero(); 
-        // Keep fixed vertices on reset for convenience? Or clear? 
-        // Let's keep them to save time.
+        // Keep fixed vertices, but clear handle
         app.handle_vertices.clear(); 
         app.weights_computed = false; 
-        app.selection_mode = 2; // Back to handle select
+        app.selection_mode = 2; 
         v.data().set_vertices(app.V); 
         v.data().compute_normals();
         update=true; 
