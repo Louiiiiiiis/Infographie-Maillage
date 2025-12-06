@@ -130,11 +130,12 @@ void compute_harmonic_weights(MeshApp& app) {
     
     int n = app.V.rows();
     Eigen::SparseMatrix<double> L;
-    igl::cotmatrix(app.V_original, app.F, L);
+    igl::cotmatrix(app.V_original, app.F, L); // Laplacien cotangente
 
+    // Préparation des conditions aux limites (Dirichlet)
     // On fixe w=0 sur la zone fixe, et w=1 sur la poignée
-    Eigen::VectorXi b(app.fixed_vertices.size() + app.handle_vertices.size());
-    Eigen::VectorXd bc(b.size());
+    Eigen::VectorXi b(app.fixed_vertices.size() + app.handle_vertices.size()); // Indices contraints
+    Eigen::VectorXd bc(b.size());                                              // Valeurs contraintes
     
     int idx = 0;
     for(int v : app.fixed_vertices)  { b(idx) = v; bc(idx) = 0.0; idx++; }
@@ -166,12 +167,12 @@ void apply_deformation(MeshApp& app) {
     if(!app.weights_computed) return;
     
     for(int i=0; i<app.V.rows(); ++i) {
-        double w = app.weights(i);
-        double f_w = w;
+        double w = app.weights(i); // Poids brut (0..1)
+        double f_w = w;            // Poids transformé
         
         // Fonction de transfert
-        if(app.transfer_function == 1)      f_w = w * w * (3 - 2 * w);
-        else if (app.transfer_function == 2) f_w = w * w;
+        if(app.transfer_function == 1)      f_w = w * w * (3 - 2 * w); // Smoothstep
+        else if (app.transfer_function == 2) f_w = w * w;               // Squared
         
         // V_new = V_old + poids * translation
         app.V.row(i) = app.V_original.row(i) + f_w * app.translation.cast<double>().transpose();
@@ -212,20 +213,12 @@ int main(int argc, char *argv[]){
     bool update_view = false;
     
     // Outils de sélection
-    if (key == KEY_PLUS) { Squared
-        app.k++; update_view=true; 
-    }
-    else if (key == KEY_MINUS && app.k > 0) { 
-        app.k--; update_view=true; 
-    }
-    else if (key == KEY_C) { 
-        app.handle_vertices.clear(); std::cout << "Selection effacee.\n"; update_view=true; 
-    }
+    if (key == KEY_PLUS) { app.k++; update_view=true; }
+    else if (key == KEY_MINUS && app.k > 0) { app.k--; update_view=true; }
+    else if (key == KEY_C) { app.handle_vertices.clear(); std::cout << "Selection effacee.\n"; update_view=true; }
     
     // Calcul
-    else if (key == KEY_SPACE) { 
-        compute_harmonic_weights(app); update_view=true; 
-    }
+    else if (key == KEY_SPACE) { compute_harmonic_weights(app); update_view=true; }
     
     // Déformation
     else if (key == KEY_UP || key == KEY_DOWN || key == KEY_LEFT || key == KEY_RIGHT) {
@@ -254,71 +247,37 @@ int main(int argc, char *argv[]){
     else if (key == KEY_R) { 
         app.V = app.V_original; 
         app.translation.setZero(); 
-  std::cout << "  SPACE: Compute Weights (Wait for gradient)\n";
-  std::cout << "  ARROWS: Move Handle\n";
-  std::cout << "  C: Clear Handle Selection\n";
-  std::cout << "  R: Reset\n";
-
-  viewer.callback_key_down = [&](igl::opengl::glfw::Viewer& v, unsigned int key, int) {
-    // std::cout << "Key: " << key << std::endl;
-    bool update = false;
-    
-    if (key == KEY_1) { app.selection_mode = 1; std::cout << "Mode: FIXED\n"; update=true; }
-    else if (key == KEY_2) { app.selection_mode = 2; std::cout << "Mode: HANDLE\n"; update=true; }
-    else if (key == KEY_PLUS) { app.k++; update=true; }
-    else if (key == KEY_MINUS && app.k > 0) { app.k--; update=true; }
-    else if (key == KEY_SPACE) { compute_harmonic_weights(app); update=true; }
-    else if (key == 67) { // 'C' to clear handle
-        app.handle_vertices.clear(); 
-        std::cout << "Handle cleared.\n"; 
-        update=true; 
-    }
-    else if (key == KEY_R) { 
-        app.V = app.V_original; 
-        app.translation.setZero(); 
-        // Keep fixed vertices, but clear handle
         app.handle_vertices.clear(); 
         app.weights_computed = false; 
-        app.selection_mode = 2; 
         v.data().set_vertices(app.V); 
         v.data().compute_normals();
-        update=true; 
+        update_view=true; 
     }
-    
-    // Deformation keys
-    float speed = 0.05f;
-    if (key == KEY_UP) { app.translation.y() += speed; apply_deformation(app); v.data().set_vertices(app.V); v.data().compute_normals(); }
-    if (key == KEY_DOWN) { app.translation.y() -= speed; apply_deformation(app); v.data().set_vertices(app.V); v.data().compute_normals(); }
-    if (key == KEY_RIGHT) { app.translation.x() += speed; apply_deformation(app); v.data().set_vertices(app.V); v.data().compute_normals(); }
-    if (key == KEY_LEFT) { app.translation.x() -= speed; apply_deformation(app); v.data().set_vertices(app.V); v.data().compute_normals(); }
 
-    if(update) update_visualization(app, v);
+    if(update_view) update_colors(app, v);
     return false;
   };
 
+  // 5. Callback Souris
   viewer.callback_mouse_down = [&](igl::opengl::glfw::Viewer& v, int button, int) {
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
-      int fid;
-      Eigen::Vector3f bc;
-      double x = v.current_mouse_x;
-      double y = v.core().viewport(3) - v.current_mouse_y;
-      if (igl::unproject_onto_mesh(Eigen::Vector2f(x, y), v.core().view, v.core().proj, v.core().viewport, app.V, app.F, fid, bc)){
-        int vi;
-        bc.maxCoeff(&vi);
+      int fid; Eigen::Vector3f bc;
+      // Raycasting pour trouver le sommet sous la souris
+      if (igl::unproject_onto_mesh(Eigen::Vector2f(v.current_mouse_x, v.core().viewport(3) - v.current_mouse_y), 
+                                   v.core().view, v.core().proj, v.core().viewport, app.V, app.F, fid, bc)){
+        int vi; bc.maxCoeff(&vi); // Sommet le plus proche dans la face
         app.current_vertex = app.F(fid, vi);
         
-        // Apply selection if mode is active
-        if (app.selection_mode > 0) {
-            std::set<int> region = get_k_ring(app.A, app.current_vertex, app.k);
-            if (app.selection_mode == 1) app.fixed_vertices.insert(region.begin(), region.end());
-            if (app.selection_mode == 2) app.handle_vertices.insert(region.begin(), region.end());
-        }
-        update_visualization(app, v);
-      }tiend
+        // Ajouter à la sélection (Poignée par défaut)
+        std::set<int> region = get_neighbors(app, app.current_vertex);
+        app.handle_vertices.insert(region.begin(), region.end());
+        
+        update_colors(app, v);
+      }
     }
     return false;
   };
 
-  update_visualization(app, viewer);
+  update_colors(app, viewer);
   viewer.launch();
 }
