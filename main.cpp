@@ -6,6 +6,7 @@
 #include <igl/massmatrix.h>
 #include <igl/invert_diag.h>
 #include <igl/jet.h>
+#include <igl/min_quad_with_fixed.h>
 
 #include <Eigen/Core>
 #include <Eigen/Sparse>
@@ -111,47 +112,37 @@ void compute_harmonic_weights(MeshApp& app) {
     Eigen::SparseMatrix<double> L, M;
     igl::cotmatrix(app.V_original, app.F, L); // Use original geometry for Laplacian
     
-    // Boundary Conditions
-    Eigen::VectorXd b = Eigen::VectorXd::Zero(n);
-    std::vector<int> boundary_indices;
+    // Prepare Boundary Conditions
+    Eigen::VectorXi b(app.fixed_vertices.size() + app.handle_vertices.size());
+    Eigen::VectorXd bc(b.size());
     
+    int idx = 0;
     for(int v : app.fixed_vertices) {
-        boundary_indices.push_back(v);
-        b(v) = 0.0;
+        b(idx) = v;
+        bc(idx) = 0.0;
+        idx++;
     }
     for(int v : app.handle_vertices) {
-        boundary_indices.push_back(v);
-        b(v) = 1.0;
+        b(idx) = v;
+        bc(idx) = 1.0;
+        idx++;
     }
     
-    // Modify system for boundary conditions (L w = 0 s.t. constraints)
-    // We want to solve L*w = 0, but enforce w[fixed]=0, w[handle]=1.
-    // A simple way is to replace rows of L with Identity and RHS with value.
-    // Or use min_quad_with_fixed.
-    // Let's do the "replace row" method for simplicity or min_quad.
-    // Actually, min_quad_with_fixed is standard in libigl but requires extra include.
-    // Let's implement the row replacement manually on L.
-    
-    Eigen::SparseMatrix<double> A = L;
-    for(int idx : boundary_indices) {
-        // Zero out the row
-        for (Eigen::SparseMatrix<double>::InnerIterator it(A, idx); it; ++it) {
-            it.valueRef() = 0;
-        }
-        // Set diagonal to 1
-        A.coeffRef(idx, idx) = 1.0;
-        // Note: This makes the matrix non-symmetric, SimplicialLLT might fail.
-        // Use LU or BiCGSTAB. Or keep symmetry by zeroing columns too (but RHS changes).
-        // Let's use SparseLU.
+    // Solve min 0.5 w^T L w subject to w(b) = bc
+    // This solves Laplace equation with Dirichlet BC
+    Eigen::VectorXd B = Eigen::VectorXd::Zero(n);
+    igl::min_quad_with_fixed_data<double> mqwf;
+    // Linear term is 0
+    if(!igl::min_quad_with_fixed_precompute(L, b, Eigen::SparseMatrix<double>(), true, mqwf)) {
+         std::cout << "Precompute failed" << std::endl;
+         return;
     }
     
-    Eigen::SparseLU<Eigen::SparseMatrix<double>> solver;
-    solver.compute(A);
-    if(solver.info() != Eigen::Success) {
-        std::cout << "Solver failed" << std::endl;
+    if(!igl::min_quad_with_fixed_solve(mqwf, B, bc, app.weights)) {
+        std::cout << "Solve failed" << std::endl;
         return;
     }
-    app.weights = solver.solve(b);
+
     app.weights_computed = true;
     std::cout << "Weights computed!" << std::endl;
 }
