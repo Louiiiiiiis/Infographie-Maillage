@@ -21,7 +21,7 @@
 const unsigned int KEY_PLUS = 334;  // Agrandir pinceau
 const unsigned int KEY_MINUS = 333; // Rétrécir pinceau
 const unsigned int KEY_SPACE = 32;  // Calculer Poids
-const unsigned int KEY_T = 84;      // Changer Fonction Transfert
+const unsigned int KEY_J = 74;      // Changer Fonction Transfert
 const unsigned int KEY_C = 67;      // Clear Poignée
 const unsigned int KEY_R = 82;      // Reset
 // Flèches directionnelles
@@ -42,7 +42,7 @@ struct MeshApp {
     std::set<int> handle_vertices; // Zone Rouge (Poignée)
     
     // Déformation
-    Eigen::VectorXd weights;       // Poids harmoniques (0..1)
+    Eigen::VectorXd weights;       // Poids "d'influence" du déplacement (0..1)
     Eigen::Vector3f translation = Eigen::Vector3f::Zero(); // Vecteur déplacement
     bool weights_computed = false;
     int transfer_function = 0;     // 0=Linear, 1=Smooth, 2=Squared
@@ -76,7 +76,7 @@ std::set<int> get_neighbors(const MeshApp& app, int seed_vertex) {
 void init_fixed_zone(MeshApp& app) {
     double min_y = app.V.col(1).minCoeff();
     double max_y = app.V.col(1).maxCoeff();
-    double epsilon = 0.05 * (max_y - min_y); // 5% de tolérance
+    double epsilon = 0.05 * (max_y - min_y); // 5% de la hauteur total pour servir de base
 
     app.fixed_vertices.clear();
     for(int i=0; i<app.V.rows(); ++i) {
@@ -98,18 +98,40 @@ void update_colors(MeshApp& app, igl::opengl::glfw::Viewer& viewer) {
     } 
     // 2. Sinon, on affiche les zones de sélection (Bleu/Rouge)
     else {
-        app.C = Eigen::MatrixXd::Constant(app.V.rows(), 3, 0.8); // Gris par défaut
-        
-        for(int v : app.fixed_vertices)  app.C.row(v) << 0, 0, 1; // Bleu (Fixe)
-        for(int v : app.handle_vertices) app.C.row(v) << 1, 0, 0; // Rouge (Poignée)
-        
-        // Prévisualisation du curseur (Vert)
-        if(app.current_vertex != -1) {
-            std::set<int> preview = get_neighbors(app, app.current_vertex);
-            for(int v : preview) {
-                // On n'écrase pas les couleurs si déjà sélectionné
-                if (!app.fixed_vertices.count(v) && !app.handle_vertices.count(v))
-                    app.C.row(v) << 0, 1, 0; 
+
+        if (app.C.rows() != app.V.rows() || app.C.cols() != 3) {
+            app.C.resize(app.V.rows(), 3);
+        }
+
+        // D'abord, on calcule quels points sont sous la souris (le pinceau vert)
+        // pour ne pas le recalculer 10 000 fois dans la boucle.
+        std::set<int> points_sous_souris;
+        if (app.current_vertex != -1) {
+            points_sous_souris = get_neighbors(app, app.current_vertex);
+        }
+
+        // MAINTENANT, on visite chaque sommet un par un pour décider sa couleur finale
+        for (int i = 0; i < app.V.rows(); i++) {
+            
+            if (app.handle_vertices.count(i) > 0) {
+                app.C(i, 0) = 1.0; 
+                app.C(i, 1) = 0.0; 
+                app.C(i, 2) = 0.0; // Rouge
+            }
+            else if (app.fixed_vertices.count(i) > 0) {
+                app.C(i, 0) = 0.0; 
+                app.C(i, 1) = 0.0; 
+                app.C(i, 2) = 1.0; // Bleu
+            }
+            else if (points_sous_souris.count(i) > 0) {
+                app.C(i, 0) = 0.0; 
+                app.C(i, 1) = 1.0; 
+                app.C(i, 2) = 0.0; // Vert
+            }
+            else {
+                app.C(i, 0) = 0.8; 
+                app.C(i, 1) = 0.8; 
+                app.C(i, 2) = 0.8; // Gris
             }
         }
     }
@@ -122,41 +144,42 @@ void update_colors(MeshApp& app, igl::opengl::glfw::Viewer& viewer) {
 
 void compute_harmonic_weights(MeshApp& app) {
     if(app.fixed_vertices.empty() || app.handle_vertices.empty()) {
-        std::cout << "[ERREUR] Il faut une zone Fixe (Bleu) et une Poignee (Rouge) !\n";
+        std::cout << "[ERREUR] Il manque des points bleus ou rouges !\n";
         return;
     }
 
-    std::cout << "[CALCUL] Resolution de l'equation de Laplace... ";
-    
-    int n = app.V.rows();
-    Eigen::SparseMatrix<double> L;
-    igl::cotmatrix(app.V_original, app.F, L); // Laplacien cotangente
+    std::cout << "[CALCUL] Lissage iteratif... ";
 
-    // Préparation des conditions aux limites (Dirichlet)
-    // On fixe w=0 sur la zone fixe, et w=1 sur la poignée
-    Eigen::VectorXi b(app.fixed_vertices.size() + app.handle_vertices.size()); // Indices contraints
-    Eigen::VectorXd bc(b.size());                                              // Valeurs contraintes
+    app.weights = Eigen::VectorXd::Constant(app.V.rows(), 0.0);
+
+    for (int h : app.handle_vertices) app.weights(h) = 1.0; 
+
+    int iterations = 1000; 
     
-    int idx = 0;
-    for(int v : app.fixed_vertices)  { b(idx) = v; bc(idx) = 0.0; idx++; }
-    for(int v : app.handle_vertices) { b(idx) = v; bc(idx) = 1.0; idx++; }
-    
-    // Résolution : min 0.5 w^T Q w  sous contrainte w(b) = bc
-    // Q = -L car L est définie négative, et le solveur veut une matrice positive.
-    Eigen::SparseMatrix<double> Q = -L;
-    Eigen::VectorXd B = Eigen::VectorXd::Zero(n); // Terme linéaire (nul ici)
-    Eigen::VectorXd Beq;                          // Contraintes d'égalité (vide)
-    
-    igl::min_quad_with_fixed_data<double> solver_data;
-    if(!igl::min_quad_with_fixed_precompute(Q, b, Eigen::SparseMatrix<double>(), true, solver_data)) {
-         std::cout << "ECHEC Precompute.\n"; return;
-    }
-    if(!igl::min_quad_with_fixed_solve(solver_data, B, bc, Beq, app.weights)) {
-        std::cout << "ECHEC Solve.\n"; return;
+    for(int k=0; k<iterations; k++) {
+        
+        for(int i=0; i<app.V.rows(); i++) {
+            
+            if(app.fixed_vertices.count(i) || app.handle_vertices.count(i)) {
+                continue; 
+            }
+
+            double somme_voisins = 0.0;
+            double nombre_voisins = 0.0;
+
+            for(int voisin : app.A[i]) {
+                somme_voisins += app.weights(voisin);
+                nombre_voisins += 1.0;
+            }
+
+            if(nombre_voisins > 0) {
+                app.weights(i) = somme_voisins / nombre_voisins;
+            }
+        }
     }
 
     app.weights_computed = true;
-    std::cout << "OK !\n";
+    std::cout << "OK (Diffusé " << iterations << " fois) !\n";
 }
 
 // ==========================================
@@ -168,12 +191,25 @@ void apply_deformation(MeshApp& app) {
     
     for(int i=0; i<app.V.rows(); ++i) {
         double w = app.weights(i); // Poids brut (0..1)
-        double f_w = w;            // Poids transformé
+        double f_w = w;
         
         // Fonction de transfert
-        if(app.transfer_function == 1)      f_w = w * w * (3 - 2 * w); // Smoothstep
-        else if (app.transfer_function == 2) f_w = w * w;               // Squared
+        if(app.transfer_function == 1)      
+            f_w = w * w * (3 - 2 * w); // Smoothstep
+        else if (app.transfer_function == 2) 
+            f_w = w * w;               // Squared
         
+
+        // --- MOUCHARD DE DEBUG ---
+        // On affiche les infos juste pour le sommet n°1000 (au milieu du lapin)
+        if (i == 1000 && app.translation.norm() > 0) {
+            std::cout << "[DEBUG] Mode: " << app.transfer_function 
+                      << " | Poids Original: " << w 
+                      << " | Poids Transformé: " << f_w << std::endl;
+        }
+        // -------------------------
+
+
         // V_new = V_old + poids * translation
         app.V.row(i) = app.V_original.row(i) + f_w * app.translation.cast<double>().transpose();
     }
@@ -205,7 +241,7 @@ int main(int argc, char *argv[]){
   std::cout << "  [C] : Effacer la selection Poignee\n";
   std::cout << "  [ESPACE] : CALCULER les poids (Degrade)\n";
   std::cout << "  [FLECHES] : DEFORMER le maillage\n";
-  std::cout << "  [T] : Changer mode de transfert (Lineaire/Smooth/Carre)\n";
+  std::cout << "  [J] : Changer mode de transfert (Lineaire/Smooth/Carre)\n";
   std::cout << "  [R] : Reset\n";
 
   // 4. Callback Clavier
@@ -213,20 +249,35 @@ int main(int argc, char *argv[]){
     bool update_view = false;
     
     // Outils de sélection
-    if (key == KEY_PLUS) { app.k++; update_view=true; }
-    else if (key == KEY_MINUS && app.k > 0) { app.k--; update_view=true; }
-    else if (key == KEY_C) { app.handle_vertices.clear(); std::cout << "Selection effacee.\n"; update_view=true; }
+    if (key == KEY_PLUS) { 
+        app.k++; update_view=true; 
+    }
+    else if (key == KEY_MINUS && app.k > 0) { 
+        app.k--; update_view=true; 
+    }
+    else if (key == KEY_C) { 
+        app.handle_vertices.clear(); 
+        std::cout << "Selection effacee.\n"; 
+        update_view=true; 
+    }
     
     // Calcul
-    else if (key == KEY_SPACE) { compute_harmonic_weights(app); update_view=true; }
+    else if (key == KEY_SPACE) { 
+        compute_harmonic_weights(app); 
+        update_view=true; 
+    }
     
     // Déformation
     else if (key == KEY_UP || key == KEY_DOWN || key == KEY_LEFT || key == KEY_RIGHT) {
         float speed = 0.05f;
-        if (key == KEY_UP)    app.translation.y() += speed;
-        if (key == KEY_DOWN)  app.translation.y() -= speed;
-        if (key == KEY_RIGHT) app.translation.x() += speed;
-        if (key == KEY_LEFT)  app.translation.x() -= speed;
+        if (key == KEY_UP)    
+            app.translation.y() += speed;
+        if (key == KEY_DOWN)  
+            app.translation.y() -= speed;
+        if (key == KEY_RIGHT) 
+            app.translation.x() += speed;
+        if (key == KEY_LEFT)  
+            app.translation.x() -= speed;
         
         apply_deformation(app);
         v.data().set_vertices(app.V);
@@ -234,7 +285,7 @@ int main(int argc, char *argv[]){
     }
     
     // Options
-    else if (key == KEY_T) {
+    else if (key == KEY_J) {
         app.transfer_function = (app.transfer_function + 1) % 3;
         std::string modes[] = {"Lineaire", "Smoothstep", "Carre"};
         std::cout << "Mode Transfert : " << modes[app.transfer_function] << std::endl;
