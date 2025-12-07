@@ -24,6 +24,7 @@ const unsigned int KEY_SPACE = 32;  // Calculer Poids
 const unsigned int KEY_J = 74;      // Changer Fonction Transfert
 const unsigned int KEY_C = 67;      // Clear Poignée
 const unsigned int KEY_R = 82;      // Reset
+const unsigned int KEY_S = 83;      // Touche S (Lissage)
 // Flèches directionnelles
 const unsigned int KEY_UP = 265;
 const unsigned int KEY_DOWN = 264;
@@ -31,7 +32,7 @@ const unsigned int KEY_LEFT = 263;
 const unsigned int KEY_RIGHT = 262;
 
 struct MeshApp {
-    Eigen::MatrixXd V, V_original, C; // Sommets, Backup, Couleurs
+    Eigen::MatrixXd V, V_ref, V_reset, C; // Sommets, Backup, Couleurs
     Eigen::MatrixXi F;                // Faces
     std::vector<std::vector<int>> A;  // Listes d'adjacence
     
@@ -200,7 +201,7 @@ void apply_deformation(MeshApp& app) {
             f_w = w * w;               // Squared
         
         // V_new = V_old + poids * translation
-        app.V.row(i) = app.V_original.row(i) + f_w * app.translation.cast<double>().transpose();
+        app.V.row(i) = app.V_ref.row(i) + f_w * app.translation.cast<double>().transpose();
     }
 }
 
@@ -213,7 +214,8 @@ int main(int argc, char *argv[]){
   
   // 1. Chargement
   igl::readOFF("../meshes/bunny.off", app.V, app.F);
-  app.V_original = app.V;
+  app.V_ref = app.V;
+  app.V_reset = app.V;
   igl::adjacency_list(app.F, app.A);
   
   // 2. Initialisation
@@ -285,13 +287,39 @@ int main(int argc, char *argv[]){
         }
     }
     else if (key == KEY_R) { 
-        app.V = app.V_original; 
+        app.V = app.V_reset; 
         app.translation.setZero(); 
         app.handle_vertices.clear(); 
         app.weights_computed = false; 
         v.data().set_vertices(app.V); 
         v.data().compute_normals();
         update_view=true; 
+    }
+
+    // --- LISSAGE GÉOMÉTRIQUE (Touche S) ---
+    else if (key == KEY_S) {
+        std::cout << "[LISSAGE] Lissage Laplacien uniforme..." << std::endl;
+        
+        for(int i=0; i<app.V.rows(); i++) {
+            
+            Eigen::Vector3d somme(0, 0, 0);
+            double count = 0;
+
+            for(int voisin_id : app.A[i]) {
+                somme += app.V.row(voisin_id);
+                count++;
+            }
+
+            if(count > 0) {
+                app.V.row(i) = somme / count;
+            }
+        }
+        
+        app.V_ref = app.V;
+
+        v.data().set_vertices(app.V);
+        v.data().compute_normals();
+        return true;
     }
 
     if(update_view) update_colors(app, v);
