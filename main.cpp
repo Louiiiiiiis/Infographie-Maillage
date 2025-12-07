@@ -199,17 +199,6 @@ void apply_deformation(MeshApp& app) {
         else if (app.transfer_function == 2) 
             f_w = w * w;               // Squared
         
-
-        // --- MOUCHARD DE DEBUG ---
-        // On affiche les infos juste pour le sommet n°1000 (au milieu du lapin)
-        if (i == 1000 && app.translation.norm() > 0) {
-            std::cout << "[DEBUG] Mode: " << app.transfer_function 
-                      << " | Poids Original: " << w 
-                      << " | Poids Transformé: " << f_w << std::endl;
-        }
-        // -------------------------
-
-
         // V_new = V_old + poids * translation
         app.V.row(i) = app.V_original.row(i) + f_w * app.translation.cast<double>().transpose();
     }
